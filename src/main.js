@@ -76,25 +76,34 @@ async function addClipsFrom(src, label) {
   renderMoves();
 }
 
+// Порядок серии: сначала Fist Fight (его первый кадр = боевая стойка), потом остальные.
+const ORDER = ['Fist Fight', 'Jab & Kick', 'Headbutt', 'Chapa Giratoria'];
+const prettify = (f) => f.replace(/\.fbx$/i, '').replace(/[_-]+/g, ' ').trim();
+
 async function init() {
-  await character.load('assets/models/martelo.fbx', (e) => {
+  const embedded = await character.load('assets/models/martelo.fbx', (e) => {
     if (e.total) loadBar.style.width = (e.loaded / e.total * 100).toFixed(0) + '%';
   });
-  renderMoves();
+  const list = [];
+  if (embedded) list.push({ clip: embedded, name: 'Jab & Kick' });
   // необязательный список готовых анимаций: assets/anims/manifest.json
-  // [{ "file": "idle.fbx" }, { "file": "punch.fbx", "name": "Punch" }]
+  // [{ "file": "punch.fbx", "name": "Punch" }]
   try {
     const res = await fetch('assets/anims/manifest.json');
     if (res.ok) {
       for (const it of await res.json()) {
         const clips = await loadClips('assets/anims/' + it.file);
-        if (!clips.length) continue;
-        if (/idle/i.test(it.role || it.file)) character.setIdle(clips[0]);
-        else character.addMove(clips[0], it.name || it.file.replace(/\.fbx$/i, '').replace(/[_-]+/g, ' '));
+        if (clips.length) list.push({ clip: clips[0], name: it.name || prettify(it.file) });
       }
-      renderMoves();
     }
   } catch (e) { console.info('manifest.json не найден или повреждён', e.message); }
+  const rank = (n) => { const i = ORDER.indexOf(n); return i < 0 ? ORDER.length : i; };
+  list.sort((a, b) => rank(a.name) - rank(b.name));
+  if (list.length) {
+    character.setStance(list[0].clip);
+    for (const it of list) character.addMove(it.clip, it.name);
+  }
+  renderMoves();
   $('loading').classList.add('done');
 }
 
@@ -136,7 +145,8 @@ function spawnMove() {
   const move = character.moves[moveIdx];
   const first = move.hits[0].time;
   // не раньше, чем персонаж освободится и успеет войти в стойку приёма
-  const strikeStart = Math.max(time + Math.max(move.pre, TRAVEL - first) + 0.1, lastEnd + 0.3 + move.pre);
+  // следующий приём стартует ровно в конце предыдущего (кроссфейд идёт в хвосте предыдущего)
+  const strikeStart = Math.max(time + Math.max(move.pre, TRAVEL - first) + 0.1, lastEnd);
   lastEnd = strikeStart + move.duration;
   schedule.push({ playAt: strikeStart - move.pre, move });
   for (const h of move.hits) {

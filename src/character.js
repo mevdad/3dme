@@ -3,6 +3,9 @@ import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 
 const HEIGHT = 1.8;        // м, итоговый рост персонажа
 const FADE = 0.12;
+const FACING = 40 * Math.PI / 180;  // общий разворот сцены: стойка смотрит влево и чуть к камере
+const BLEND = 0.35;       // с, кроссфейд между приёмами и стойкой
+const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const EFFECTORS = [
   { name: 'LeftHand', kind: 'hand' }, { name: 'RightHand', kind: 'hand' },
   { name: 'LeftFoot', kind: 'foot' }, { name: 'RightFoot', kind: 'foot' },
@@ -42,17 +45,23 @@ export class Character {
     fbx.scale.setScalar(HEIGHT / bind.getSize(new THREE.Vector3()).y);
     this.baseScaleY = fbx.scale.y;
 
-    const clips = fbx.animations;
-    if (!clips.length) return null;
-    this.#ground(clips[0]);
-    const first = this.addMove(clips[0], 'Jab & Kick');
-    // стойка = первый кадр первого клипа; в неё же возвращаемся после каждого приёма
-    this.idleClip = clips[0];
-    this.idleYaw = first.yaw0;
-    this.idleAction = this.mixer.clipAction(clips[0]);
+    const clip = fbx.animations[0] || null;
+    if (clip) this.#ground(clip);
+    return clip;   // клип, вшитый в модель (дальше решает вызывающий код)
+  }
+
+  // Боевая стойка = первый кадр этого клипа. Все приёмы разворачиваются так, чтобы их
+  // стартовая поза смотрела туда же, — тогда переходы между приёмами бесшовные.
+  setStance(clip) {
+    this.idleYaw = undefined;
+    this.idleYaw = this.#analyze(clip).yaw0;
+    // Отдельный клип из первого кадра: нельзя делить action с самим приёмом (у Fist Fight стойка
+    // совпадает с его началом) — у них разные режимы зацикливания и веса.
+    const pose = THREE.AnimationUtils.subclip(clip, 'stance', 0, 1, 30);
+    this.idleAction = this.mixer.clipAction(pose);
     this.idleAction.setLoop(THREE.LoopRepeat, Infinity);
-    this.#startIdle(0);
-    return first;
+    this.idleLooped = false;
+    this.#restoreIdle();
   }
 
   // ставим ступни на пол по позе первого кадра анимации
@@ -68,16 +77,21 @@ export class Character {
 
   addMove(clip, name) {
     const a = this.#analyze(clip);
-    // чем сильнее развёрнута стартовая поза относительно стойки, тем дольше плавный переход
-    const dYaw = this.idleYaw === undefined ? 0 : Math.abs(angDiff(a.yaw0, this.idleYaw));
-    const blend = 0.2 + 0.3 * Math.min(1, dYaw / 90);
     const move = {
-      clip, hits: a.hits, yaw0: a.yaw0, pre: blend, post: blend, duration: clip.duration,
+      clip, hits: a.hits, yaw0: a.yaw0, yawOff: a.yawOff, duration: clip.duration,
+      pre: BLEND, post: BLEND,
       name: name || (a.hits[0]?.kind === 'foot' ? 'Kick' : 'Punch'),
     };
     this.moves.push(move);
-    if (this.idleAction) { this.#startIdle(0); this.current = null; this.pending = null; } // анализ сбросил микшер
+    this.#restoreIdle();  // анализ сбросил микшер
     return move;
+  }
+
+  #restoreIdle() {
+    if (!this.idleAction) return;
+    this.#startIdle(0);
+    this.current = null; this.pending = null; this.yawAnim = null;
+    this.root.rotation.y = FACING;
   }
 
   // Другая стойка в покое (клип зацикливается)
@@ -97,8 +111,9 @@ export class Character {
     a.play();
   }
 
-  // Запускать за move.pre секунд до первого кадра движения: поза плавно набирается,
-  // время клипа стоит на 0, а потом идёт — и все удары попадают в рассчитанные моменты.
+  // Запускать за move.pre секунд до первого кадра движения (можно прямо во время хвоста
+  // предыдущего приёма): поза плавно набирается, время клипа стоит на 0, а потом идёт —
+  // и все удары попадают в рассчитанные моменты.
   play(move) {
     const pre = move.pre;
     this.idleAction?.fadeOut(pre);
@@ -111,13 +126,18 @@ export class Character {
     a.fadeIn(pre).play();
     this.current = { action: a, move };
     this.pending = { action: a, left: pre };
+    this.#turnTo(move.yawOff, pre);
   }
 
+  // поворот корня плавно и линейно, синхронно с весами кроссфейда — разворот поз не «рвётся»
+  #turnTo(yaw, dur) { this.yawAnim = { from: this.root.rotation.y, to: yaw, t: 0, dur }; }
+
   #onFinished(action) {
-    if (this.current?.action !== action) return;
+    if (this.current?.action !== action) return;   // уже запущен следующий приём — он сам всё смешает
     const post = this.current.move.post;
     action.fadeOut(post);
     this.#startIdle(post);
+    this.#turnTo(FACING, post);
     this.current = null;
   }
 
@@ -126,6 +146,13 @@ export class Character {
     if (this.pending) {
       this.pending.left -= dt;
       if (this.pending.left <= 0) { this.pending.action.paused = false; this.pending = null; }
+    }
+    const y = this.yawAnim;
+    if (y) {
+      y.t += dt;
+      const k = Math.min(1, y.t / y.dur);
+      this.root.rotation.y = y.from + (y.to - y.from) * k;
+      if (k >= 1) this.yawAnim = null;
     }
     this.mixer?.update(dt);
     if (this.model) this.model.scale.y = this.baseScaleY * (1 + 0.005 * Math.sin(this.t * 2.2)); // дыхание
@@ -191,6 +218,7 @@ export class Character {
       picked.push(best);
     }
     picked.sort((a, b) => a.i - b.i);
+    const yawOff = FACING + (this.idleYaw === undefined ? 0 : angDiff(this.idleYaw, yaw0) * Math.PI / 180);
     const hits = picked.map((c) => {
       const p = pos[c.k];
       const dir = p[c.i].clone().sub(p[Math.max(0, c.i - Math.round(0.08 / dt))]);
@@ -199,11 +227,14 @@ export class Character {
       const out = p[c.i].clone().sub(hipsPos[c.i]); out.y = 0;
       if (out.lengthSq() < 1e-6) out.set(0, 0, 1);
       return {
-        time: c.i * dt, point: p[c.i].clone(), dir: dir.normalize(), out: out.normalize(),
+        time: c.i * dt,
+        point: p[c.i].clone().applyAxisAngle(Y_AXIS, yawOff),
+        dir: dir.normalize().applyAxisAngle(Y_AXIS, yawOff),
+        out: out.normalize().applyAxisAngle(Y_AXIS, yawOff),
         kind: this.effectors[c.k].kind, effector: this.effectors[c.k].name,
       };
     });
-    return { hits, yaw0 };
+    return { hits, yaw0, yawOff };
   }
 }
 
