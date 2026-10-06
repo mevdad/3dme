@@ -4,6 +4,7 @@ import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 
 const HEIGHT = 1.8;                  // м, итоговый рост персонажа
 const FACING = 0;                     // доп. разворот персонажа в сцене (0 = как в анимации: смотрит вправо, +Z)
+const ROOT_MOTION = 1;               // доля движения бёдер по полу (выпады вперёд); 0 = стоять строго на месте
 const BLEND = 0.45;                  // с, кроссфейд между приёмами и стойкой
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const EFFECTORS = [
@@ -14,8 +15,8 @@ const EFFECTORS = [
 const smooth = (k) => k * k * k * (k * (k * 6 - 15) + 10);   // smootherstep: мягкий вход и выход
 
 // Персонаж на Mixamo-скелете: боевая стойка + приёмы.
-// Персонаж всегда стоит на одном месте и смотрит в одну сторону: из клипов вырезано смещение
-// бёдер по полу, а стартовый разворот каждого клипа подогнан под стойку — переходы без «проворотов».
+// Персонаж возвращается в одну и ту же точку после каждого приёма; стартовый разворот каждого
+// клипа подогнан под стойку — переходы без «проворотов».
 export class Character {
   constructor(scene) {
     this.root = new THREE.Group();
@@ -80,15 +81,20 @@ export class Character {
     return move;
   }
 
-  // Копия клипа: бёдра не уезжают по полу (x/z зафиксированы) + поворот тела на yawDeg.
+  // Копия клипа: поворот тела на yawDeg (+ масштаб выпадов по полу, см. ROOT_MOTION).
   #bake(clip, yawDeg) {
     const q = new THREE.Quaternion().setFromAxisAngle(Y_AXIS, yawDeg * Math.PI / 180);
     const tmp = new THREE.Quaternion();
     const tracks = clip.tracks.map((t) => {
       t = t.clone();
       if (t.name === 'mixamorigHips.position') {
-        const v = t.values;
-        for (let i = 3; i < v.length; i += 3) { v[i] = v[0]; v[i + 2] = v[2]; }
+        // смещение бёдер по полу (выпады) — масштабируем и поворачиваем вместе с телом; клипы
+        // возвращаются в исходную точку, поэтому между приёмами персонаж стоит на месте
+        const v = t.values, d = new THREE.Vector3();
+        for (let i = 3; i < v.length; i += 3) {
+          d.set(v[i] - v[0], 0, v[i + 2] - v[2]).multiplyScalar(ROOT_MOTION).applyQuaternion(q);
+          v[i] = v[0] + d.x; v[i + 2] = v[2] + d.z;
+        }
       } else if (t.name === 'mixamorigHips.quaternion' && yawDeg) {
         const v = t.values;
         for (let i = 0; i < v.length; i += 4) {

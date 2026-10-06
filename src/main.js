@@ -138,6 +138,7 @@ function spawnMove() {
     const start = h.point.clone().addScaledVector(out, rnd(8, 9.5));
     start.y = Math.max(0.5, h.point.y + rnd(-0.2, 1.2));
     const ball = new Ball(nextLabel(), start, end, hitAt - TRAVEL, hitAt, h.dir);
+    ball.hit = h; ball.moveName = move.name;
     scene.add(ball.mesh);
     balls.push(ball);
   }
