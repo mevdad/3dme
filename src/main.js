@@ -108,6 +108,8 @@ const balls = [];
 const schedule = [];    // { playAt, move }
 let lastEnd = 0;        // момент, когда текущий приём закончится
 let moveIdx = 0, round = 1, labelBag = [];
+let stopLeft = 0, lastStop = -1;   // «hit-stop»: на долю секунды всё замедляется в момент удара
+let prevMove = null;    // последний запланированный приём (null = персонаж в стойке)
 
 function nextLabel() {
   if (!labelBag.length) labelBag = LABELS.slice().sort(() => Math.random() - 0.5);
@@ -122,31 +124,38 @@ function toast(text) {
 }
 
 function spawnMove() {
-  const move = character.moves[moveIdx];
+  // приёмы без достижимых ударов (все удары «за спиной») пропускаем
+  const playable = character.moves.filter((m) => m.hits.length);
+  const move = playable[moveIdx % playable.length];
   const first = move.hits[0].time;
-  // не раньше, чем персонаж освободится и успеет войти в стойку приёма
-  // следующий приём стартует ровно в конце предыдущего (кроссфейд идёт в хвосте предыдущего)
-  const strikeStart = Math.max(time + Math.max(move.pre, TRAVEL - first) + 0.1, lastEnd);
+  // плавность перехода зависит от того, насколько отличаются конец предыдущего приёма и начало этого;
+  // перекрываем хвост предыдущего, не задевая его последний удар, а недостающее — добавляем паузой
+  const pre = character.blendBetween(prevMove, move);
+  const overlap = prevMove ? Math.min(pre, character.tailRoom(prevMove)) : pre;
+  const strikeStart = Math.max(time + Math.max(pre, TRAVEL - first) + 0.1, lastEnd + (pre - overlap));
   lastEnd = strikeStart + move.duration;
-  schedule.push({ playAt: strikeStart - move.pre, move });
+  prevMove = move;
+  schedule.push({ playAt: strikeStart - pre, move, pre });
   for (const h of move.hits) {
     const hitAt = strikeStart + h.time;
-    // шар прилетает точно туда, где в этот момент окажется кулак/нога/голова — со стороны удара
-    const out = h.out.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), rnd(-0.5, 0.5));
-    if (out.x < -0.3) { out.x *= -0.6; out.normalize(); } // не летим в камеру и не закрываем персонажа
-    const end = h.point.clone().addScaledVector(out, 0.32 * 0.7);
-    const start = h.point.clone().addScaledVector(out, rnd(8, 9.5));
+    // шар прилетает точно туда, где в этот момент окажется кулак/нога/голова — спереди или сбоку
+    const jitter = THREE.MathUtils.clamp(rnd(-0.25, 0.25), -0.25, 0.25);
+    const dirA = h.approach.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), jitter);
+    if (dirA.z < 0.17) dirA.copy(h.approach);   // не разворачиваем в сторону тела
+    const end = h.point.clone().addScaledVector(dirA, 0.32 * 0.85);
+    const start = h.point.clone().addScaledVector(dirA, rnd(8, 9.5));
     start.y = Math.max(0.5, h.point.y + rnd(-0.2, 1.2));
     const ball = new Ball(nextLabel(), start, end, hitAt - TRAVEL, hitAt, h.dir);
     ball.hit = h; ball.moveName = move.name;
     scene.add(ball.mesh);
     balls.push(ball);
   }
-  if (++moveIdx >= character.moves.length) {
+  if (++moveIdx >= playable.length) {
     moveIdx = 0;
     const r = round++;
     schedule.push({ at: lastEnd, fn: () => toast(`Раунд ${r} пройден — стойка`) });
     lastEnd += REST;
+    prevMove = null;   // после паузы персонаж стоит в стойке
   }
 }
 
@@ -155,13 +164,14 @@ function step(dt) {
   if (character.moves.length && lastEnd - time < 2.0) spawnMove();
   for (let i = schedule.length - 1; i >= 0; i--) {
     const s = schedule[i];
-    if (time >= (s.playAt ?? s.at)) { s.move ? character.play(s.move) : s.fn(); schedule.splice(i, 1); }
+    if (time >= (s.playAt ?? s.at)) { s.move ? character.play(s.move, s.pre) : s.fn(); schedule.splice(i, 1); }
   }
   for (let i = balls.length - 1; i >= 0; i--) {
     const b = balls[i];
     b.update(time, camera);
     if (time >= b.hitAt) {
       fx.shatter(b, b.dir);
+      if (time - lastStop > 0.35) { stopLeft = 0.06; lastStop = time; }
       const c = chips[b.label.text]; c.n++; c.el.textContent = `${b.label.text} ${c.n}`;
       scene.remove(b.mesh); balls.splice(i, 1);
     }
@@ -186,7 +196,11 @@ function frame() {
   requestAnimationFrame(frame);
   timer.update();
   const dt = Math.min(timer.getDelta(), 0.05);
-  if (!debug.frozen) step(dt);
+  if (!debug.frozen) {
+    const slow = stopLeft > 0;
+    if (slow) stopLeft -= dt;
+    step(slow ? dt * 0.12 : dt);   // весь мир (персонаж, шары, осколки) замедляется синхронно
+  }
   controls.update();
   shakeOff.set(rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)).multiplyScalar(fx.shake);
   camera.position.add(shakeOff);
