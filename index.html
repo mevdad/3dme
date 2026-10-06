@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>3D Me</title>
+  <title>3D Me — Code Smasher</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="style.css">
   <script type="importmap">
   { "imports": {
@@ -15,30 +16,15 @@
 <body>
   <canvas id="scene"></canvas>
 
-  <aside id="panel">
-    <h1 id="title">3D Me</h1>
-    <div class="row">
-      <button id="wave">👋 Помахать</button>
-      <button id="spin">🔄 Вращение</button>
-    </div>
-    <label>Кожа <input type="color" data-key="skin"></label>
-    <label>Волосы <input type="color" data-key="hair"></label>
-    <label>Глаза <input type="color" data-key="eyes"></label>
-    <label>Футболка <input type="color" data-key="shirt"></label>
-    <label>Штаны <input type="color" data-key="pants"></label>
-    <label>Причёска
-      <select id="hairStyle">
-        <option value="short">Короткая</option>
-        <option value="long">Длинная</option>
-        <option value="bun">Пучок</option>
-        <option value="bald">Без волос</option>
-      </select>
-    </label>
-    <label class="check"><input type="checkbox" id="glasses"> Очки</label>
-    <label class="check"><input type="checkbox" id="beard"> Борода</label>
-    <p class="hint">Перетащите свой <b>.glb</b> файл на сцену, чтобы заменить модель.<br>
-      Мышь — вращение, колесо — масштаб.</p>
-  </aside>
+  <div id="hud">
+    <h1>Code Smasher</h1>
+    <div id="score"></div>
+    <div id="moves"></div>
+    <p class="hint">Перетащите <b>.fbx</b> с анимацией (Mixamo) на окно — она добавится как новый приём.<br>
+      Имя файла с <b>idle</b> станет стойкой в покое.</p>
+  </div>
+
+  <div id="loading"><div><span id="loadText">Загрузка модели…</span><i><b id="loadBar"></b></i></div></div>
 
   <script type="module" src="src/main.js"></script>
 </body>
