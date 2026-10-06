@@ -110,45 +110,67 @@ addEventListener('drop', async (e) => {
 });
 
 // --- игровая логика ---
+// Приёмы идут по кругу (раунд = все приёмы по одному разу). Между приёмами и после раунда
+// персонаж возвращается в боевую стойку и ждёт.
+const TRAVEL = 2.0;     // с, сколько летит шар до удара
+const REST = 3.0;       // с, пауза в стойке после раунда
 let time = 0;
 const balls = [];
-let lastEnd = 0;       // момент, когда персонаж освободится
-let nextSpawn = 1.2;
-let lastMove = null, labelBag = [];
+const schedule = [];    // { playAt, move }
+let lastEnd = 0;        // момент, когда текущий приём закончится
+let moveIdx = 0, round = 1, labelBag = [];
 
 function nextLabel() {
   if (!labelBag.length) labelBag = LABELS.slice().sort(() => Math.random() - 0.5);
   return labelBag.pop();
 }
-function pickMove() {
-  const pool = character.moves.length > 1 ? character.moves.filter((m) => m !== lastMove) : character.moves;
-  return (lastMove = pool[Math.floor(Math.random() * pool.length)]);
-}
 const rnd = (a, b) => a + Math.random() * (b - a);
 
-function spawn() {
-  const move = pickMove();
-  const strikeStart = Math.max(time + 2.2, lastEnd + 0.25);
-  const hitAt = strikeStart + move.hitTime;
-  lastEnd = strikeStart + move.clip.duration - 0.1;
-  const start = new THREE.Vector3(rnd(-2.5, 2.5), rnd(0.8, 2.6), rnd(9, 10.5));
-  // шар прилетает ровно в точку, где в этот момент окажется кулак/нога
-  const end = move.hit.point.clone();
-  end.addScaledVector(start.clone().sub(end).normalize(), 0.32 * 0.7);
-  const ball = new Ball(nextLabel(), start, end, time, hitAt, move, strikeStart);
-  scene.add(ball.mesh);
-  balls.push(ball);
+function toast(text) {
+  const el = $('toast');
+  el.textContent = text; el.classList.add('show');
+  clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('show'), 2600);
+}
+
+function spawnMove() {
+  const move = character.moves[moveIdx];
+  const first = move.hits[0].time;
+  // не раньше, чем персонаж освободится и успеет войти в стойку приёма
+  const strikeStart = Math.max(time + Math.max(move.pre, TRAVEL - first) + 0.1, lastEnd + 0.3 + move.pre);
+  lastEnd = strikeStart + move.duration;
+  schedule.push({ playAt: strikeStart - move.pre, move });
+  for (const h of move.hits) {
+    const hitAt = strikeStart + h.time;
+    // шар прилетает точно туда, где в этот момент окажется кулак/нога/голова — со стороны удара
+    const out = h.out.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), rnd(-0.5, 0.5));
+    if (out.x > 0.3) { out.x *= -0.6; out.normalize(); } // не летим в камеру и не закрываем персонажа
+    const end = h.point.clone().addScaledVector(out, 0.32 * 0.7);
+    const start = h.point.clone().addScaledVector(out, rnd(8, 9.5));
+    start.y = Math.max(0.5, h.point.y + rnd(-0.2, 1.2));
+    const ball = new Ball(nextLabel(), start, end, hitAt - TRAVEL, hitAt, h.dir);
+    scene.add(ball.mesh);
+    balls.push(ball);
+  }
+  if (++moveIdx >= character.moves.length) {
+    moveIdx = 0;
+    const r = round++;
+    schedule.push({ at: lastEnd, fn: () => toast(`Раунд ${r} пройден — стойка`) });
+    lastEnd += REST;
+  }
 }
 
 function step(dt) {
   time += dt;
-  if (character.moves.length && balls.length < 2 && time >= nextSpawn) { spawn(); nextSpawn = time + 0.5; }
+  if (character.moves.length && lastEnd - time < 2.0) spawnMove();
+  for (let i = schedule.length - 1; i >= 0; i--) {
+    const s = schedule[i];
+    if (time >= (s.playAt ?? s.at)) { s.move ? character.play(s.move) : s.fn(); schedule.splice(i, 1); }
+  }
   for (let i = balls.length - 1; i >= 0; i--) {
     const b = balls[i];
-    if (!b.struck && time >= b.strikeStart) { character.play(b.move); b.struck = true; }
     b.update(time, camera);
     if (time >= b.hitAt) {
-      fx.shatter(b, b.move.hit.dir);
+      fx.shatter(b, b.dir);
       const c = chips[b.label.text]; c.n++; c.el.textContent = `${b.label.text} ${c.n}`;
       scene.remove(b.mesh); balls.splice(i, 1);
     }
@@ -167,12 +189,13 @@ function resize() {
 addEventListener('resize', resize); resize();
 
 const timer = new THREE.Timer();
+const debug = { frozen: false };  // для автотестов/скриншотов
 const shakeOff = new THREE.Vector3();
 function frame() {
   requestAnimationFrame(frame);
   timer.update();
   const dt = Math.min(timer.getDelta(), 0.05);
-  step(dt);
+  if (!debug.frozen) step(dt);
   controls.update();
   shakeOff.set(rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)).multiplyScalar(fx.shake);
   camera.position.add(shakeOff);
@@ -181,4 +204,4 @@ function frame() {
 }
 
 init().then(frame).catch((e) => { $('loadText').textContent = 'Ошибка загрузки: ' + e.message; console.error(e); });
-window.__game = { scene, character, balls, step, fx };
+window.__game = { debug, scene, character, balls, step, fx, schedule, get time() { return time; } };

@@ -19,3 +19,5 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #0e1220; fon
 #loading i { display: block; height: 4px; margin-top: 12px; background: #1e2538; border-radius: 4px; overflow: hidden; }
 #loading b { display: block; height: 100%; width: 0; background: #4c6fff; transition: width .2s; }
 @media (max-width: 600px) { #hud { max-width: 200px; font-size: 12px; } }
+#toast { position: fixed; left: 50%; bottom: 40px; transform: translate(-50%, 10px); padding: 10px 20px; border-radius: 99px; background: rgba(76,111,255,.9); font-weight: 700; opacity: 0; transition: .35s; pointer-events: none; }
+#toast.show { opacity: 1; transform: translate(-50%, 0); }

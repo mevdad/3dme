@@ -2,21 +2,24 @@ import * as THREE from 'three';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 
 const HEIGHT = 1.8;        // м, итоговый рост персонажа
-const FADE = 0.12;         // с, кроссфейд между позами
-const EFFECTORS = {
-  LeftHand: 'hand', RightHand: 'hand', LeftFoot: 'foot', RightFoot: 'foot',
-};
+const FADE = 0.12;
+const EFFECTORS = [
+  { name: 'LeftHand', kind: 'hand' }, { name: 'RightHand', kind: 'hand' },
+  { name: 'LeftFoot', kind: 'foot' }, { name: 'RightFoot', kind: 'foot' },
+  { name: 'Head', kind: 'head' },
+];
 
-// Персонаж на Mixamo-скелете: стойка в покое + приёмы (атаки).
-// Для каждого приёма автоматически находится момент и точка удара —
-// конечность, которая быстро летит дальше всего вперёд (+Z).
+// Персонаж на Mixamo-скелете: стойка в покое + приёмы.
+// Приём может содержать несколько ударов — они находятся автоматически (см. #analyze).
 export class Character {
   constructor(scene) {
     this.root = new THREE.Group();
     scene.add(this.root);
     this.moves = [];
     this.idleAction = null;
-    this.current = null;
+    this.current = null;     // { action, move }
+    this.pending = null;     // приём, который «разогревается» (поза уже набирается, но время стоит)
+    this.t = 0;
   }
 
   async load(url, onProgress) {
@@ -28,22 +31,28 @@ export class Character {
       if (o.isSkinnedMesh) this.skinned = o;
     });
     this.mixer = new THREE.AnimationMixer(fbx);
-    this.effectors = Object.keys(EFFECTORS).map((n) => ({
-      kind: EFFECTORS[n], name: n, bone: fbx.getObjectByName('mixamorig' + n),
-    })).filter((e) => e.bone);
+    this.mixer.addEventListener('finished', (e) => this.#onFinished(e.action));
+    this.hips = fbx.getObjectByName('mixamorigHips');
+    this.effectors = EFFECTORS.map((e) => ({ ...e, bone: fbx.getObjectByName('mixamorig' + e.name) }))
+      .filter((e) => e.bone);
 
     // масштаб по росту в bind-позе
     fbx.updateMatrixWorld(true);
     const bind = new THREE.Box3().setFromObject(this.skinned, true);
     fbx.scale.setScalar(HEIGHT / bind.getSize(new THREE.Vector3()).y);
+    this.baseScaleY = fbx.scale.y;
 
     const clips = fbx.animations;
-    if (clips.length) {
-      this.#ground(clips[0]);
-      const first = this.addMove(clips[0], null);
-      this.setIdle(null, clips[0]); // пока нет idle — замираем в стойке из первого кадра
-      return first;
-    }
+    if (!clips.length) return null;
+    this.#ground(clips[0]);
+    const first = this.addMove(clips[0], 'Jab & Kick');
+    // стойка = первый кадр первого клипа; в неё же возвращаемся после каждого приёма
+    this.idleClip = clips[0];
+    this.idleYaw = first.yaw0;
+    this.idleAction = this.mixer.clipAction(clips[0]);
+    this.idleAction.setLoop(THREE.LoopRepeat, Infinity);
+    this.#startIdle(0);
+    return first;
   }
 
   // ставим ступни на пол по позе первого кадра анимации
@@ -57,105 +66,148 @@ export class Character {
     this.mixer.stopAllAction();
   }
 
-  // добавляет приём; name по умолчанию определяется по конечности
   addMove(clip, name) {
-    const hit = this.#analyze(clip);
-    if (this.idleAction) { this.#startIdle(0); this.current = null; } // анализ сбросил микшер
+    const a = this.#analyze(clip);
+    // чем сильнее развёрнута стартовая поза относительно стойки, тем дольше плавный переход
+    const dYaw = this.idleYaw === undefined ? 0 : Math.abs(angDiff(a.yaw0, this.idleYaw));
+    const blend = 0.2 + 0.3 * Math.min(1, dYaw / 90);
     const move = {
-      clip, hit,
-      hitTime: hit.time,
-      name: name || (hit.kind === 'foot' ? 'Kick' : 'Punch'),
+      clip, hits: a.hits, yaw0: a.yaw0, pre: blend, post: blend, duration: clip.duration,
+      name: name || (a.hits[0]?.kind === 'foot' ? 'Kick' : 'Punch'),
     };
     this.moves.push(move);
+    if (this.idleAction) { this.#startIdle(0); this.current = null; this.pending = null; } // анализ сбросил микшер
     return move;
   }
 
-  // idle: зацикленный клип, либо (clip=null) заморозка кадра 0 из frozenFrom
-  setIdle(clip, frozenFrom) {
-    const prev = this.idleAction;
-    const c = clip || frozenFrom;
-    this.idleAction = this.mixer.clipAction(c);
-    this.idleFrozen = !clip;
+  // Другая стойка в покое (клип зацикливается)
+  setIdle(clip) {
+    this.idleAction?.fadeOut(FADE);
+    this.idleAction = this.mixer.clipAction(clip);
     this.idleAction.setLoop(THREE.LoopRepeat, Infinity);
-    this.#startIdle(0);
-    if (prev && prev !== this.idleAction) prev.fadeOut(FADE);
+    this.idleLooped = true;
+    this.#startIdle(FADE);
   }
 
   #startIdle(fade) {
     const a = this.idleAction;
     a.reset();
-    a.paused = this.idleFrozen;
+    a.paused = !this.idleLooped;   // без отдельного idle-клипа держим стойку замороженной
     if (fade) a.fadeIn(fade); else a.setEffectiveWeight(1);
     a.play();
   }
 
+  // Запускать за move.pre секунд до первого кадра движения: поза плавно набирается,
+  // время клипа стоит на 0, а потом идёт — и все удары попадают в рассчитанные моменты.
   play(move) {
+    const pre = move.pre;
+    this.idleAction?.fadeOut(pre);
+    if (this.current) this.current.action.fadeOut(pre);
     const a = this.mixer.clipAction(move.clip);
     a.reset();
     a.setLoop(THREE.LoopOnce, 1);
     a.clampWhenFinished = true;
-    a.fadeIn(FADE).play();
+    a.paused = true;
+    a.fadeIn(pre).play();
     this.current = { action: a, move };
+    this.pending = { action: a, left: pre };
+  }
+
+  #onFinished(action) {
+    if (this.current?.action !== action) return;
+    const post = this.current.move.post;
+    action.fadeOut(post);
+    this.#startIdle(post);
+    this.current = null;
   }
 
   update(dt) {
-    const c = this.current;
-    if (c && c.action.time >= c.move.clip.duration - FADE) {
-      c.action.fadeOut(FADE);
-      this.#startIdle(FADE);
-      this.current = null;
+    this.t += dt;
+    if (this.pending) {
+      this.pending.left -= dt;
+      if (this.pending.left <= 0) { this.pending.action.paused = false; this.pending = null; }
     }
     this.mixer?.update(dt);
+    if (this.model) this.model.scale.y = this.baseScaleY * (1 + 0.005 * Math.sin(this.t * 2.2)); // дыхание
   }
 
-  // Сэмплируем клип и ищем точку удара.
+  // Сэмплируем клип и находим удары: быстрые «выбросы» руки/ноги/головы от тела.
   #analyze(clip) {
     const dur = clip.duration;
     const N = Math.max(8, Math.ceil(dur * 60));
     const dt = dur / N;
+    this.mixer.stopAllAction();                    // иначе стойка подмешается в анализируемую позу
     const act = this.mixer.clipAction(clip).play();
     const pos = this.effectors.map(() => []);
+    const hipsPos = [];
+    let yaw0 = 0;
+    const tmp = new THREE.Vector3(), q = new THREE.Quaternion();
     for (let i = 0; i <= N; i++) {
       this.mixer.setTime(i * dt);
       this.model.updateMatrixWorld(true);
       this.effectors.forEach((e, k) => pos[k].push(e.bone.getWorldPosition(new THREE.Vector3())));
+      hipsPos.push(this.hips.getWorldPosition(new THREE.Vector3()));
+      if (i === 0) {
+        tmp.set(0, 0, 1).applyQuaternion(this.hips.getWorldQuaternion(q));
+        yaw0 = Math.atan2(tmp.x, tmp.z) * 180 / Math.PI;
+      }
     }
     act.stop();
     this.mixer.stopAllAction();
 
-    const W = Math.max(2, Math.round(0.1 / dt)); // окно ±0.1 с
-    let best = null;
+    const W = Math.max(2, Math.round(0.1 / dt));   // окно скорости ±0.1 с
+    const PW = Math.max(3, Math.round(0.3 / dt));  // окно пика ±0.3 с
+    const anchor = hipsPos[0];
+    const cands = [];
     this.effectors.forEach((e, k) => {
       const p = pos[k];
+      const r = p.map((v) => v.distanceTo(anchor));     // удаление от стартовой точки тела
       for (let i = W; i <= N - W; i++) {
-        let path = 0;
-        for (let j = i - W; j < i + W; j++) path += p[j].distanceTo(p[j + 1]);
-        const speed = path / (2 * W * dt);
-        if (speed < 1.0) continue; // опорная нога и «просто стоящие» конечности
-        if (!best || p[i].z > best.pos.z) best = { i, k, pos: p[i], speed };
+        let top = true;
+        for (let d = -PW; d <= PW && top; d++) { const j = i + d; if (j >= 0 && j <= N && r[j] > r[i] + 1e-9) top = false; }
+        if (!top) continue;
+        let mn = Infinity;
+        for (let j = Math.max(0, i - PW); j <= i; j++) mn = Math.min(mn, r[j]);
+        const prom = r[i] - mn;                           // насколько «выбросило» вперёд
+        let vmax = 0;
+        for (let j = Math.max(1, i - PW); j <= i; j++) vmax = Math.max(vmax, p[j].distanceTo(p[j - 1]) / dt);
+        if (e.kind === 'foot' && p[i].y < 0.3) continue;  // шаг, а не удар
+        if (e.kind === 'head' && p[i].y < 1.0) continue;
+        if (!((prom >= 0.25 && vmax >= 2.5) || (prom >= 0.2 && vmax >= 6))) continue;
+        cands.push({ i, k, prom, vmax, score: vmax * (1 + prom) * (e.kind === 'foot' ? 1.3 : 1) });
       }
     });
-    if (!best) { // нет быстрых движений вперёд — берём самую быструю точку
+    cands.sort((a, b) => b.score - a.score);
+    const picked = [];
+    for (const c of cands) if (picked.every((p) => Math.abs(p.i - c.i) * dt >= 0.12)) picked.push(c);
+    if (!picked.length) {  // нет явных ударов — берём самую быструю точку клипа
+      let best = null;
       this.effectors.forEach((e, k) => {
         for (let i = 1; i < N; i++) {
-          const speed = pos[k][i - 1].distanceTo(pos[k][i + 1]);
-          if (!best || speed > best.speed) best = { i, k, pos: pos[k][i], speed };
+          const v = pos[k][i - 1].distanceTo(pos[k][i + 1]);
+          if (!best || v > best.v) best = { i, k, v };
         }
       });
+      picked.push(best);
     }
-    const p = pos[best.k];
-    const back = Math.max(0, best.i - Math.round(0.08 / dt));
-    const dir = best.pos.clone().sub(p[back]);
-    if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
-    return {
-      time: best.i * dt,
-      point: best.pos.clone(),
-      dir: dir.normalize(),
-      kind: this.effectors[best.k].kind,
-      effector: this.effectors[best.k].name,
-    };
+    picked.sort((a, b) => a.i - b.i);
+    const hits = picked.map((c) => {
+      const p = pos[c.k];
+      const dir = p[c.i].clone().sub(p[Math.max(0, c.i - Math.round(0.08 / dt))]);
+      if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
+      // откуда «наружу» бьёт конечность — шар прилетит с этой стороны
+      const out = p[c.i].clone().sub(hipsPos[c.i]); out.y = 0;
+      if (out.lengthSq() < 1e-6) out.set(0, 0, 1);
+      return {
+        time: c.i * dt, point: p[c.i].clone(), dir: dir.normalize(), out: out.normalize(),
+        kind: this.effectors[c.k].kind, effector: this.effectors[c.k].name,
+      };
+    });
+    return { hits, yaw0 };
   }
 }
+
+function angDiff(a, b) { let d = (a - b) % 360; if (d > 180) d -= 360; if (d < -180) d += 360; return d; }
 
 // Загрузка клипов из .fbx (ArrayBuffer или URL)
 export async function loadClips(src) {

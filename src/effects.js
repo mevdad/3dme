@@ -74,12 +74,11 @@ function assets(l) {
   return cache.get(l.text);
 }
 
-// Летящий шар. Траектория полностью детерминирована: из start в end за [t0, hitAt].
+// Летящий шар. Траектория детерминирована: из start в end за [t0, hitAt]; до t0 шар скрыт.
 export class Ball {
-  constructor(label, start, end, t0, hitAt, move, strikeStart) {
+  constructor(label, start, end, t0, hitAt, dir) {
     this.label = label; this.start = start; this.end = end;
-    this.t0 = t0; this.hitAt = hitAt; this.move = move; this.strikeStart = strikeStart;
-    this.struck = false;
+    this.t0 = t0; this.hitAt = hitAt; this.dir = dir;
     const a = assets(label);
     this.mesh = new THREE.Group();
     this.body = new THREE.Mesh(ballGeo, a.ball);
@@ -88,9 +87,11 @@ export class Ball {
     this.glow.scale.setScalar(RADIUS * 5);
     this.mesh.add(this.body, this.glow);
     this.mesh.position.copy(start);
+    this.mesh.visible = false;
   }
 
   update(now, camera) {
+    this.mesh.visible = now >= this.t0;
     const k = THREE.MathUtils.clamp((now - this.t0) / (this.hitAt - this.t0), 0, 1);
     this.mesh.position.lerpVectors(this.start, this.end, k);
     this.mesh.position.y += Math.sin(k * Math.PI) * 0.35; // лёгкая дуга, в конце = 0
