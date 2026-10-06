@@ -16,9 +16,9 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(BG);
 scene.fog = new THREE.Fog(BG, 14, 34);
 
-// Камера смотрит сбоку: персонаж справа лицом влево (+Z), шары прилетают слева.
+// Камера смотрит сбоку: персонаж слева лицом вправо (+Z), шары прилетают справа.
 const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
-camera.position.set(7, 1.9, 3.6);
+camera.position.set(-7, 1.9, 3.6);
 const controls = new OrbitControls(camera, canvas);
 controls.target.set(0, 1.0, 2.6);
 controls.enableDamping = true;
@@ -29,15 +29,15 @@ controls.update();
 // --- свет и пол ---
 scene.add(new THREE.HemisphereLight(0x9db8ff, 0x1a1c2a, 0.75));
 const key = new THREE.DirectionalLight(0xfff1e0, 2.6);
-key.position.set(4, 7, 5);
+key.position.set(-4, 7, 5);
 key.castShadow = true;
 key.shadow.mapSize.set(2048, 2048);
 Object.assign(key.shadow.camera, { left: -8, right: 8, top: 8, bottom: -8, near: 1, far: 25 });
 key.shadow.bias = -0.0004; key.shadow.normalBias = 0.03;
 key.target.position.set(0, 0, 2);
 scene.add(key, key.target);
-const rim = new THREE.DirectionalLight(0x6a7bff, 2.2); rim.position.set(-5, 3, -4); scene.add(rim);
-const rim2 = new THREE.DirectionalLight(0xff4fd8, 1.2); rim2.position.set(5, 2, -5); scene.add(rim2);
+const rim = new THREE.DirectionalLight(0x6a7bff, 2.2); rim.position.set(5, 3, -4); scene.add(rim);
+const rim2 = new THREE.DirectionalLight(0xff4fd8, 1.2); rim2.position.set(-5, 2, -5); scene.add(rim2);
 
 const floor = new THREE.Mesh(
   new THREE.CircleGeometry(30, 64),
@@ -65,8 +65,9 @@ function renderMoves() {
   $('moves').textContent = 'Приёмы: ' + (character.moves.map((m) => m.name).join(' · ') || '—');
 }
 
-// Порядок серии: сначала Fist Fight (его первый кадр = боевая стойка), потом остальные.
-const ORDER = ['Fist Fight', 'Jab & Kick', 'Headbutt', 'Chapa Giratoria'];
+// Порядок серии: сначала Fist Fight (его первый кадр = боевая стойка), Headbutt в конце —
+// он заканчивается в позе, самой близкой к стойке, поэтому возврат в неё почти незаметен.
+const ORDER = ['Fist Fight', 'Jab & Kick', 'Chapa Giratoria', 'Headbutt'];
 const prettify = (f) => f.replace(/\.fbx$/i, '').replace(/[_-]+/g, ' ').trim();
 
 async function init() {
@@ -132,7 +133,7 @@ function spawnMove() {
     const hitAt = strikeStart + h.time;
     // шар прилетает точно туда, где в этот момент окажется кулак/нога/голова — со стороны удара
     const out = h.out.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), rnd(-0.5, 0.5));
-    if (out.x > 0.3) { out.x *= -0.6; out.normalize(); } // не летим в камеру и не закрываем персонажа
+    if (out.x < -0.3) { out.x *= -0.6; out.normalize(); } // не летим в камеру и не закрываем персонажа
     const end = h.point.clone().addScaledVector(out, 0.32 * 0.7);
     const start = h.point.clone().addScaledVector(out, rnd(8, 9.5));
     start.y = Math.max(0.5, h.point.y + rnd(-0.2, 1.2));

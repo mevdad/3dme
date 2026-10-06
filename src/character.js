@@ -3,7 +3,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 
 const HEIGHT = 1.8;                  // м, итоговый рост персонажа
-const FACING = 40 * Math.PI / 180;   // разворот персонажа в сцене (не меняется): смотрит влево и чуть к камере
+const FACING = 0;                     // доп. разворот персонажа в сцене (0 = как в анимации: смотрит вправо, +Z)
 const BLEND = 0.45;                  // с, кроссфейд между приёмами и стойкой
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const EFFECTORS = [
