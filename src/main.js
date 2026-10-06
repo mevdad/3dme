@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { Character, loadClips } from './character.js';
+import { Character, loadFbxClips } from './character.js';
 import { Ball, Fx, LABELS } from './effects.js';
 
 const canvas = document.getElementById('scene');
@@ -65,43 +65,19 @@ function renderMoves() {
   $('moves').textContent = 'Приёмы: ' + (character.moves.map((m) => m.name).join(' · ') || '—');
 }
 
-async function addClipsFrom(src, label) {
-  const clips = await loadClips(src);
-  if (!clips.length) { console.warn('В файле нет анимаций', label); return; }
-  const clip = clips[0];
-  const idle = /idle/i.test(label);
-  if (idle) { character.setIdle(clip); return; }
-  const name = label.replace(/\.fbx$/i, '').replace(/[_-]+/g, ' ').trim();
-  character.addMove(clip, name || null);
-  renderMoves();
-}
-
 // Порядок серии: сначала Fist Fight (его первый кадр = боевая стойка), потом остальные.
 const ORDER = ['Fist Fight', 'Jab & Kick', 'Headbutt', 'Chapa Giratoria'];
 const prettify = (f) => f.replace(/\.fbx$/i, '').replace(/[_-]+/g, ' ').trim();
 
 async function init() {
-  const embedded = await character.load('assets/models/martelo.fbx', (e) => {
+  const clips = await character.load('assets/models/martelo.glb', (e) => {
     if (e.total) loadBar.style.width = (e.loaded / e.total * 100).toFixed(0) + '%';
   });
-  const list = [];
-  if (embedded) list.push({ clip: embedded, name: 'Jab & Kick' });
-  // необязательный список готовых анимаций: assets/anims/manifest.json
-  // [{ "file": "punch.fbx", "name": "Punch" }]
-  try {
-    const res = await fetch('assets/anims/manifest.json');
-    if (res.ok) {
-      for (const it of await res.json()) {
-        const clips = await loadClips('assets/anims/' + it.file);
-        if (clips.length) list.push({ clip: clips[0], name: it.name || prettify(it.file) });
-      }
-    }
-  } catch (e) { console.info('manifest.json не найден или повреждён', e.message); }
   const rank = (n) => { const i = ORDER.indexOf(n); return i < 0 ? ORDER.length : i; };
-  list.sort((a, b) => rank(a.name) - rank(b.name));
-  if (list.length) {
-    character.setStance(list[0].clip);
-    for (const it of list) character.addMove(it.clip, it.name);
+  clips.sort((a, b) => rank(a.name) - rank(b.name));
+  if (clips.length) {
+    character.setStance(clips[0]);
+    for (const c of clips) character.addMove(c, c.name);
   }
   renderMoves();
   $('loading').classList.add('done');
@@ -114,7 +90,10 @@ addEventListener('drop', async (e) => {
   e.preventDefault(); canvas.classList.remove('drop');
   for (const f of e.dataTransfer.files) {
     if (!/\.fbx$/i.test(f.name)) continue;
-    try { await addClipsFrom(await f.arrayBuffer(), f.name); } catch (err) { console.error(err); }
+    try {
+      const [clip] = await loadFbxClips(await f.arrayBuffer());
+      if (clip) { character.addMove(clip, prettify(f.name)); renderMoves(); }
+    } catch (err) { console.error(err); }
   }
 });
 
